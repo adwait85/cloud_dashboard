@@ -1,0 +1,158 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Impedance Analyzer – Lavender</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="/static/style.css" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<link href="https://unpkg.com/tabulator-tables@5.6.2/dist/css/tabulator.min.css" rel="stylesheet">
+<script src="https://unpkg.com/tabulator-tables@5.6.2/dist/js/tabulator.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <h1>Impedance Analyzer <span class="lav">— Lavender Edition</span></h1>
+  <p class="muted">Login with the dashboard password, then control the analyzer, run sweeps, and view Bode & Nyquist plots.</p>
+
+  <div class="card">
+    <div class="title">Login</div>
+    <form onsubmit="return savePass(this)">
+      <input type="password" name="pass" placeholder="Dashboard password" required>
+      <button class="btn">Save</button>
+      <span id="authNote" class="muted"></span>
+    </form>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="title">Controls</div>
+      <form onsubmit="return setFreq(this)">
+        <label>Set Frequency (Hz)</label>
+        <input type="number" name="hz" min="10" max="5000" step="1" value="250" required>
+        <button class="btn">Apply</button>
+      </form>
+      <div class="btnrow">
+        <button class="btn" onclick="postAction('/api/single')">Single</button>
+        <button class="btn" onclick="postAction('/api/sweep')">Sweep</button>
+        <button class="btn" onclick="postAction('/api/analysis')">Analysis</button>
+      </div>
+      <form onsubmit="return cal(this)">
+        <label>Cal R (Ω)</label>
+        <input type="number" name="r_known" step="0.01" placeholder="470000" required>
+        <button class="btn">Calibrate</button>
+      </form>
+      <div class="btnrow">
+        <button class="btn outline" onclick="refreshStatus()">Get Status</button>
+      </div>
+      <div id="statusBox" class="muted"></div>
+      <div id="agentBox" class="muted"></div>
+    </div>
+
+    <div class="card">
+      <div class="title">Latest Single</div>
+      <pre id="singleBox" class="monobox">No data yet.</pre>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="title">Bode |Z|</div>
+      <div id="bodeMag" class="plot"></div>
+      <div class="title" style="margin-top:8px;">Bode Phase</div>
+      <div id="bodePhase" class="plot"></div>
+    </div>
+    <div class="card">
+      <div class="title">Nyquist</div>
+      <div id="nyquist" class="plot tall"></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="title">Data Table</div>
+      <div id="table" style="height:360px;"></div>
+    </div>
+    <div class="card">
+      <div class="title">Upload CSV/XLSX</div>
+      <form method="post" action="/api/upload" enctype="multipart/form-data" onsubmit="return bindPass(this)">
+        <input type="file" name="file" accept=".csv,.xlsx,.xls" required>
+        <input type="hidden" name="pass" id="upass">
+        <button class="btn">Upload & Plot</button>
+      </form>
+      <p class="muted">Columns: <code>f</code> (Hz), <code>mag</code> (Ω), <code>phase</code> (deg). Z' and Z'' computed automatically.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+let PASS = ""; let table;
+
+function savePass(f){ PASS = f.pass.value; document.getElementById('authNote').textContent='Saved'; return false; }
+function bindPass(f){ document.getElementById('upass').value = PASS; return true; }
+
+async function api(path, body){
+  const b = new URLSearchParams(body||{});
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:b});
+  if(r.headers.get('content-type')?.includes('application/json')) return r.json();
+  return null;
+}
+
+async function setFreq(f){
+  const hz = parseFloat(f.hz.value);
+  const res = await api('/api/setfreq', {hz, pass:PASS});
+  alert(res?.ok ? 'OK' : 'Failed');
+  return false;
+}
+
+async function cal(f){
+  const r = parseFloat(f.r_known.value);
+  const res = await api('/api/cal', {r_known:r, pass:PASS});
+  alert(res?.ok ? 'OK' : 'Failed');
+  return false;
+}
+
+async function postAction(url){
+  const res = await api(url, {pass:PASS});
+  if(res?.type === 'single'){
+    document.getElementById('singleBox').textContent = JSON.stringify(res, null, 2);
+  }
+  if(res?.type === 'sweep' || res?.type === 'analysis' || res?.type === 'upload'){
+    plotAll(res.points || []);
+  }
+}
+
+async function refreshStatus(){
+  const res = await api('/api/status', {pass:PASS});
+  const s = document.getElementById('statusBox');
+  const a = document.getElementById('agentBox');
+  s.textContent = res?.ok ? `f=${(res.freq||0).toFixed(1)} Hz | MagCal=${(res.mag_cal||0).toFixed(4)} | PhaseCal=${(res.phase_cal||0).toFixed(2)}°` : 'No status';
+  try{
+    const hb = await fetch('/api/agent_heartbeat').then(r=>r.json());
+    if(hb && hb.last_seen){ a.textContent = 'Agent last seen: ' + new Date(hb.last_seen*1000).toLocaleString(); }
+  }catch(e){}
+}
+
+function plotAll(points){
+  const f = points.map(p=>p.f), mag = points.map(p=>p.mag), phase = points.map(p=>p.phase);
+  Plotly.react('bodeMag', [{x:f,y:mag,mode:'lines+markers'}], {title:'|Z| vs Frequency', xaxis:{type:'log', title:'Hz'}, yaxis:{title:'|Z| (Ω)'}});
+  Plotly.react('bodePhase', [{x:f,y:phase,mode:'lines+markers'}], {title:'Phase vs Frequency', xaxis:{type:'log', title:'Hz'}, yaxis:{title:'deg'}});
+  const zr = points.map(p=>p.mag!=null&&p.phase!=null ? p.mag*Math.cos(p.phase*Math.PI/180) : null);
+  const zi = points.map(p=>p.mag!=null&&p.phase!=null ? p.mag*Math.sin(p.phase*Math.PI/180) : null);
+  Plotly.react('nyquist', [{x:zr,y:zi.map(v=>v==null?null:-v),mode:'lines+markers'}], {title:"Nyquist (Z' vs -Z'')", xaxis:{title:"Z' (Ω)"}, yaxis:{title:"-Z'' (Ω)"}});
+  const rows = points.map((p,i)=>({idx:i+1,f:p.f,mag:p.mag,phase:p.phase,
+    Zre:(p.mag&&p.phase!=null)?p.mag*Math.cos(p.phase*Math.PI/180):null,
+    Zim:(p.mag&&p.phase!=null)?p.mag*Math.sin(p.phase*Math.PI/180):null}));
+  if(!table){
+    table = new Tabulator("#table",{data:rows,layout:"fitColumns",
+      columns:[{title:"#",field:"idx",width:60},{title:"f (Hz)",field:"f",sorter:"number"},
+               {title:"|Z| (Ω)",field:"mag",sorter:"number"},
+               {title:"Phase (deg)",field:"phase",sorter:"number"},
+               {title:"Z' (Ω)",field:"Zre",sorter:"number"},
+               {title:"Z'' (Ω)",field:"Zim",sorter:"number"}]});
+  } else { table.setData(rows); }
+}
+
+refreshStatus();
+</script>
+</body>
+</html>
