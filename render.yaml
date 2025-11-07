@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: r4-cloud-dashboard
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: PROJECT_KEY
+        value: change-this-project-key
+      - key: DASHBOARD_PASS
+        value: choose-a-ui-password
+    autoDeploy: true
